@@ -164,11 +164,13 @@ func startConsumer() {
 	brokerAddress := os.Getenv("KAFKA_BROKER")
 
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers:   []string{brokerAddress},
-		Topic:     topic,
-		Partition: 0,
-		MinBytes:  10e3, // 10KB
-		MaxBytes:  10e6, // 10MB
+		Brokers:        []string{brokerAddress},
+		GroupID:        "chat-group",
+		Topic:          topic,
+		Partition:      0,
+		MinBytes:       10e3,        // 10KB
+		MaxBytes:       10e6,        // 10MB
+		CommitInterval: time.Second, // Автоматически сохранять смещения каждую секунду
 	})
 
 	defer reader.Close()

@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: chat_service
-#      POSTGRES_SSL: enabled
+#     POSTGRES_SSL: enabled
     volumes:
       - ./db/data:/var/lib/postgresql/data
     ports:
