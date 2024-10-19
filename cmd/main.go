@@ -8,11 +8,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	kafkago "github.com/segmentio/kafka-go"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net/http"
 	"os"
-	"realtime-chat/internal/database"
+	db "realtime-chat/internal/database"
 	"realtime-chat/internal/kafka"
+	red "realtime-chat/internal/redis"
+	"realtime-chat/internal/websockets"
 	"time"
 )
 
@@ -23,45 +25,22 @@ var (
 )
 
 func main() {
-	dbConnStr := "postgres://" + os.Getenv("DB_USER") + ":" + os.Getenv("DB_PASSWORD") +
-		"@postgres-db:5432/chat_service?sslmode=disable&connect_timeout=5" // добавлено sslmode=disable для отключения SSL
 
-	log.Printf("Connecting to database with user: %s", os.Getenv("DB_USER"))
-	log.Println("Database connection string:", dbConnStr)
+	//Инициализация
+	red.InitRedis()
+	defer red.CloseRedis()
 
-	err := database.InitializeDatabase(dbConnStr)
-	if err != nil {
-		log.Fatalf("Could not connect to the database: %v", err)
-	}
+	db.InitializeDB()
+	defer db.CloseDatabase()
 
-	defer database.CloseDatabase()
-
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "redis:6379"
-	}
-	redisClient = redis.NewClient(&redis.Options{
-		Addr: redisAddr,
-	})
-
-	// Проверка подключения к Redis
-	_, err = redisClient.Ping(ctx).Result()
-	if err != nil {
-		log.Fatalf("Could not connect to Redis: %v", err)
-	}
-
-	// Получаем адрес брокера Kafka из переменных окружения
-	kafkaBroker := os.Getenv("KAFKA_BROKER")
-	if kafkaBroker == "" {
-		kafkaBroker = "kafka:9092"
-	}
-	kafkaProducer = kafka.NewKafkaProducer(kafkaBroker, "chat-topic")
+	kafkaProducer = kafka.NewKafkaProducer("chat-topic")
 
 	// Запускаем Kafka Consumer в отдельной горутине
 	go startConsumer()
 
 	// Настраиваем маршруты HTTP
 	r := mux.NewRouter()
+	r.HandleFunc("/ws", websockets.HandleWebSocket)
 	r.HandleFunc("/send-message", SendMessage).Methods("POST")
 	r.HandleFunc("/messages", GetMessages).Methods("GET")
 
@@ -109,7 +88,6 @@ func GetMessages(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get messages from cache", http.StatusInternalServerError)
 		return
 	}
-
 	var messages []MessageRequest
 	for _, key := range keys {
 		val, err := redisClient.Get(ctx, key).Result()
@@ -148,7 +126,7 @@ func processMessage(message kafkago.Message) error {
 	}
 
 	// Шаг 3: Сохраняем сообщение в базу данных с уникальным message_id
-	if err := database.SaveMessage(messageID, messageReq.SenderID, messageReq.ReceiverID, messageReq.Content); err != nil {
+	if err := db.SaveMessage(messageID, messageReq.SenderID, messageReq.ReceiverID, messageReq.Content); err != nil {
 		log.Printf("Failed to save message: %v", err)
 		return err
 	}

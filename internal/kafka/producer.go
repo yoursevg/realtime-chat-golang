@@ -4,13 +4,19 @@ import (
 	"context"
 	"github.com/segmentio/kafka-go"
 	"log"
+	"os"
 )
 
 type Producer struct {
 	writer *kafka.Writer
 }
 
-func NewKafkaProducer(brokerAddress string, topic string) *Producer {
+func NewKafkaProducer(topic string) *Producer {
+	// Получаем адрес брокера Kafka из переменных окружения
+	brokerAddress := os.Getenv("KAFKA_BROKER")
+	if brokerAddress == "" {
+		brokerAddress = "kafka:9092"
+	}
 	return &Producer{
 		writer: &kafka.Writer{
 			Addr:     kafka.TCP(brokerAddress),

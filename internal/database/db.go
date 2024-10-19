@@ -2,10 +2,11 @@ package database
 
 import (
 	"database/sql"
+	"fmt"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq" // PostgreSQL driver
-	"log"
-	"time"
+	log "github.com/sirupsen/logrus"
+	"os"
 )
 
 type Message struct {
@@ -17,22 +18,30 @@ type Message struct {
 
 var db *sql.DB
 
-// InitializeDatabase инициализирует подключение к базе данных
-func InitializeDatabase(connStr string) error {
+// InitializeDB инициализирует подключение к базе данных
+func InitializeDB() {
+	dbUser := os.Getenv("DB_USER")
+	dbPassword := os.Getenv("DB_PASSWORD")
+	dbHost := os.Getenv("DB_HOST")
+	dbName := os.Getenv("DB_NAME")
+
+	dbConnStr := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable&connect_timeout=5",
+		dbUser, dbPassword, dbHost, dbName)
+
+	log.Printf("Connecting to database with user: %s", dbUser)
+	log.Println("Database connection string:", dbConnStr)
+
 	var err error
-	db, err = sql.Open("postgres", connStr)
+	db, err = sql.Open("postgres", dbConnStr)
 	if err != nil {
-		return err
+		log.WithError(err).Fatal("Error connecting to database")
 	}
 
-	// Проверяем доступность базы данных с таймаутом
-	for i := 0; i < 5; i++ { // Попытки подключения, например, 5 раз
-		if err := db.Ping(); err == nil {
-			break
-		}
-		log.Println("Waiting for database to be ready...")
-		time.Sleep(2 * time.Second) // Ждем 2 секунды перед повторной попыткой
+	if err := db.Ping(); err != nil {
+		log.WithError(err).Fatal("Error pinging database")
 	}
+
+	log.Println("Connected to the database successfully.")
 
 	createTableQuery := `
 	CREATE TABLE IF NOT EXISTS messages (
@@ -46,9 +55,8 @@ func InitializeDatabase(connStr string) error {
 	`
 
 	if _, err := db.Exec(createTableQuery); err != nil {
-		return err
+		log.WithError(err).Fatal("Error creating init table")
 	}
-	return nil
 }
 
 // SaveMessage saves a message to the database
@@ -58,7 +66,7 @@ func SaveMessage(messageID uuid.UUID, senderID, receiverID int, content string) 
               ON CONFLICT (message_id) DO NOTHING`
 	_, err := db.Exec(query, messageID, senderID, receiverID, content)
 	if err != nil {
-		log.Printf("Failed to save message: %v", err)
+		log.WithError(err).Error("Failed to save message to the database")
 	} else {
 		log.Printf("Message saved successfully with message_id: %s", messageID)
 	}
