@@ -38,9 +38,21 @@ func main() {
 	// Запускаем Kafka Consumer в отдельной горутине
 	go startConsumer()
 
+	hub := &websockets.Hub{
+		Clients:    make(map[*websockets.Client]bool),
+		Broadcast:  make(chan []byte),
+		Register:   make(chan *websockets.Client),
+		Unregister: make(chan *websockets.Client),
+	}
+
+	// Запускаем Hub в горутине
+	go hub.Run()
+
 	// Настраиваем маршруты HTTP
 	r := mux.NewRouter()
-	r.HandleFunc("/ws", websockets.HandleWebSocket)
+	r.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		websockets.HandleWebSocket(hub, kafkaProducer, w, r)
+	})
 	r.HandleFunc("/send-message", SendMessage).Methods("POST")
 	r.HandleFunc("/messages", GetMessages).Methods("GET")
 
