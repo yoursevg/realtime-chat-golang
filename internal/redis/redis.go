@@ -49,6 +49,34 @@ func CacheMessage(message models.Message) error {
 	return nil
 }
 
+// GetMessages получает все сообщения из Redis
+func GetMessages(ctx context.Context) ([]models.Message, error) {
+	keys, err := rdb.Keys(ctx, "message:*").Result()
+	if err != nil {
+		log.Printf("Failed to get message keys from Redis: %v", err)
+		return nil, err
+	}
+
+	var messages []models.Message
+	for _, key := range keys {
+		val, err := rdb.Get(ctx, key).Result()
+		if err != nil {
+			log.Printf("Failed to get message from Redis for key %s: %v", key, err)
+			continue // Пропускаем сообщение, если произошла ошибка
+		}
+
+		var message models.Message
+		if err := json.Unmarshal([]byte(val), &message); err != nil {
+			log.Printf("Failed to unmarshal message from Redis for key %s: %v", key, err)
+			continue // Пропускаем сообщение, если оно невалидно
+		}
+
+		messages = append(messages, message)
+	}
+
+	return messages, nil
+}
+
 // CloseRedis закрывает подключение к Redis
 func CloseRedis() {
 	err := rdb.Close()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	kafkago "github.com/segmentio/kafka-go"
@@ -13,14 +12,15 @@ import (
 	"os"
 	db "realtime-chat/internal/database"
 	"realtime-chat/internal/kafka"
+	"realtime-chat/internal/models"
 	red "realtime-chat/internal/redis"
+	"realtime-chat/internal/requests"
 	"realtime-chat/internal/websockets"
 	"time"
 )
 
 var (
 	kafkaProducer *kafka.Producer
-	redisClient   *redis.Client // Redis клиент
 	ctx           = context.Background()
 )
 
@@ -49,89 +49,77 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8080", r))
 }
 
-type MessageRequest struct {
-	SenderID   int    `json:"sender_id"`
-	ReceiverID int    `json:"receiver_id"`
-	Content    string `json:"content"`
-}
-
 // SendMessage Handler для отправки сообщения через Kafka Producer
 func SendMessage(w http.ResponseWriter, r *http.Request) {
-	var messageReq MessageRequest
+	var messageReq requests.MessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&messageReq); err != nil {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
 
-	// Добавляем сообщение в Redis с ограниченным временем хранения
-	messageJSON, _ := json.Marshal(messageReq)
-	err := redisClient.Set(ctx, fmt.Sprintf("message-%d", time.Now().UnixNano()), messageJSON, 10*time.Minute).Err()
-	if err != nil {
+	// Генерируем уникальный ID для сообщения
+	messageID := uuid.New()
+
+	// Формируем сообщение для сохранения
+	message := models.Message{
+		MessageID:  messageID,
+		SenderID:   messageReq.SenderID,
+		ReceiverID: messageReq.ReceiverID,
+		Content:    messageReq.Content,
+		CreatedAt:  time.Now().Format(time.RFC3339),
+	}
+
+	// Сохраняем сообщение в PostgreSQL
+	if err := db.SaveMessage(message); err != nil {
+		http.Error(w, "Failed to save message to database", http.StatusInternalServerError)
+		log.Error(err)
+	}
+
+	// Сохраняем сообщение в Redis
+	if err := red.CacheMessage(message); err != nil {
 		http.Error(w, "Failed to cache message", http.StatusInternalServerError)
-		return
+		log.Error(err)
 	}
 
 	// Отправляем сообщение в Kafka
-	err = kafkaProducer.SendMessage("chat-key", string(messageJSON))
+	messageJSON, _ := json.Marshal(message)
+	err := kafkaProducer.SendMessage("chat-key", string(messageJSON))
 	if err != nil {
 		http.Error(w, "Failed to send message", http.StatusInternalServerError)
-		return
+		log.Error(err)
 	}
 
-	w.Write([]byte("Message sent to Kafka and cached in Redis"))
+	_, err = w.Write([]byte("Message sent to Kafka, saved in DB and cached in Redis"))
+	if err != nil {
+		log.Error(err)
+	}
 }
 
-// GetMessages Новый Handler для получения сообщений
+// GetMessages Получение сообщений из редиса
 func GetMessages(w http.ResponseWriter, r *http.Request) {
-	keys, err := redisClient.Keys(ctx, "message-*").Result()
+	messages, err := red.GetMessages(ctx)
 	if err != nil {
-		http.Error(w, "Failed to get messages from cache", http.StatusInternalServerError)
-		return
-	}
-	var messages []MessageRequest
-	for _, key := range keys {
-		val, err := redisClient.Get(ctx, key).Result()
-		if err != nil {
-			continue
-		}
-
-		var message MessageRequest
-		if err := json.Unmarshal([]byte(val), &message); err == nil {
-			messages = append(messages, message)
-		}
+		http.Error(w, "Failed to get messages from Redis", http.StatusInternalServerError)
+		log.Error(err)
 	}
 
+	// Устанавливаем заголовок контента
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(messages); err != nil {
 		http.Error(w, "Failed to encode messages", http.StatusInternalServerError)
-		return
+		log.Error(err)
 	}
 }
 
-// processMessage processes a Kafka message and saves it to the database
+// processMessage processes a Kafka message
 func processMessage(message kafkago.Message) error {
 
-	// Шаг 1: Распаковываем сообщение
-	var messageReq MessageRequest
+	var messageReq requests.MessageRequest
 	if err := json.Unmarshal(message.Value, &messageReq); err != nil {
 		log.Printf("Error unmarshalling message: %v", err)
 		return err
 	}
 
-	// Шаг 2: Генерируем уникальный UUID для сообщения
-	messageID, err := uuid.NewUUID() // Используем Google UUID для генерации уникального идентификатора
-	if err != nil {
-		log.Printf("Failed to generate message UUID: %v", err)
-		return err
-	}
-
-	// Шаг 3: Сохраняем сообщение в базу данных с уникальным message_id
-	if err := db.SaveMessage(messageID, messageReq.SenderID, messageReq.ReceiverID, messageReq.Content); err != nil {
-		log.Printf("Failed to save message: %v", err)
-		return err
-	}
-
-	log.Printf("Message from sender %d to receiver %d saved successfully", messageReq.SenderID, messageReq.ReceiverID)
 	return nil
 }
 
